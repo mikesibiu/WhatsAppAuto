@@ -2,6 +2,7 @@ const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const path = require('path');
+const fs = require('fs');
 const { exec } = require('child_process');
 const crypto = require('crypto');
 
@@ -16,6 +17,77 @@ let contacts = [];
 let scheduledMessages = []; // { id, contactId, contactName, message, sendAt, status, timer }
 let shutdownTimer = null;
 let shutdownAt = null;
+let anySentThisSession = false; // guards auto-shutdown from firing on a bare restart
+
+const QUEUE_FILE = path.join(__dirname, 'queue.json');
+
+// ── Queue persistence ──────────────────────────────────────────────────────
+
+// Only pending messages are persisted — sent/failed/missed are ephemeral.
+function saveQueue() {
+  try {
+    const pending = scheduledMessages
+      .filter((m) => m.status === 'pending')
+      .map(({ timer, ...m }) => m);
+    fs.writeFileSync(QUEUE_FILE, JSON.stringify(pending, null, 2));
+  } catch (e) {
+    console.error('Failed to save queue:', e.message);
+  }
+}
+
+// Called once at startup so the UI can show queued messages before WA connects.
+function loadQueue() {
+  try {
+    if (!fs.existsSync(QUEUE_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
+    // All items in the file are pending; timers are armed later in rescheduleFromQueue.
+    scheduledMessages = raw.map((m) => ({ ...m, status: 'pending', timer: null }));
+    console.log(`Loaded ${scheduledMessages.length} pending message(s) from queue`);
+  } catch (e) {
+    console.error('Failed to load queue:', e.message);
+  }
+}
+
+// Arms the send timer for a single pending message.
+function armTimer(msg) {
+  const delay = msg.sendAt - Date.now();
+  msg.timer = setTimeout(async () => {
+    if (msg.status !== 'pending') return;
+    try {
+      await client.sendMessage(msg.contactId, msg.message);
+      msg.status = 'sent';
+      msg.sentAt = Date.now();
+      anySentThisSession = true;
+      console.log(`✓ Sent to ${msg.contactName}`);
+    } catch (err) {
+      msg.status = 'failed';
+      msg.error = err.message;
+      anySentThisSession = true; // failed attempts still count for shutdown logic
+      console.error(`✗ Failed to send to ${msg.contactName}:`, err.message);
+    }
+    saveQueue();
+    checkAutoShutdown();
+  }, delay);
+}
+
+// Called when WA becomes ready — re-arms surviving messages or marks them missed.
+function rescheduleFromQueue() {
+  const now = Date.now();
+  let missed = 0;
+  scheduledMessages.forEach((msg) => {
+    if (msg.status !== 'pending') return;
+    if (msg.sendAt <= now) {
+      msg.status = 'missed';
+      missed++;
+    } else {
+      armTimer(msg);
+    }
+  });
+  if (missed) {
+    console.log(`⚠ ${missed} message(s) missed their window while the server was down`);
+    saveQueue(); // removes missed ones from disk
+  }
+}
 
 // ── WhatsApp Client ────────────────────────────────────────────────────────
 const client = new Client({
@@ -66,6 +138,8 @@ client.on('ready', async () => {
   } catch (err) {
     console.error('Error loading contacts:', err);
   }
+
+  rescheduleFromQueue();
 });
 
 client.on('disconnected', (reason) => {
@@ -76,10 +150,12 @@ client.on('disconnected', (reason) => {
 // ── Shutdown helpers ───────────────────────────────────────────────────────
 function checkAutoShutdown() {
   const hasPending = scheduledMessages.some((m) => m.status === 'pending');
-  const hasAny = scheduledMessages.length > 0;
 
-  if (!hasPending && hasAny && !shutdownTimer) {
-    console.log('All messages sent — auto-shutdown in 2 minutes');
+  // Only arm the countdown if this session actually sent/failed something.
+  // Prevents a bare restart (with future-dated pending messages still waiting)
+  // from immediately triggering the 2-minute exit timer.
+  if (!hasPending && anySentThisSession && !shutdownTimer) {
+    console.log('All messages resolved — auto-shutdown in 2 minutes');
     shutdownAt = Date.now() + 2 * 60 * 1000;
     shutdownTimer = setTimeout(performShutdown, 2 * 60 * 1000);
   }
@@ -98,24 +174,22 @@ async function performShutdown() {
   console.log('Shutting down…');
   try {
     await client.destroy();
-  } catch (_) {
-    /* ignore */
-  }
+  } catch (_) { /* ignore */ }
   process.exit(0);
 }
 
+// Clean exit on SIGTERM (sent by ./start.sh --restart)
+process.on('SIGTERM', performShutdown);
+
 // ── API Routes ─────────────────────────────────────────────────────────────
 
-// GET /api/status
 app.get('/api/status', (_req, res) => {
   res.json({ wa: waStatus, qr: qrDataUrl, contactsLoaded: contacts.length > 0, shutdownAt });
 });
 
-// GET /api/contacts?q=
 app.get('/api/contacts', (req, res) => {
   const q = (req.query.q || '').toLowerCase().trim();
 
-  // Empty query → return first 50 for browsing (already sorted alphabetically)
   const pool = q
     ? contacts.filter(
         (c) =>
@@ -134,14 +208,10 @@ app.get('/api/contacts', (req, res) => {
   );
 });
 
-// GET /api/scheduled
 app.get('/api/scheduled', (_req, res) => {
-  // strip non-serialisable timer handles
-  const safe = scheduledMessages.map(({ timer, ...m }) => m);
-  res.json(safe);
+  res.json(scheduledMessages.map(({ timer, ...m }) => m));
 });
 
-// POST /api/schedule
 app.post('/api/schedule', (req, res) => {
   const { contactId, contactName, message, sendAt } = req.body;
 
@@ -150,9 +220,7 @@ app.post('/api/schedule', (req, res) => {
   }
 
   const sendTime = new Date(sendAt).getTime();
-  const delay = sendTime - Date.now();
-
-  if (delay <= 0) {
+  if (sendTime - Date.now() <= 0) {
     return res.status(400).json({ error: 'sendAt must be in the future' });
   }
 
@@ -163,31 +231,14 @@ app.post('/api/schedule', (req, res) => {
   cancelAutoShutdown();
 
   const id = crypto.randomUUID();
-
-  const timer = setTimeout(async () => {
-    const msg = scheduledMessages.find((m) => m.id === id);
-    if (!msg || msg.status !== 'pending') return;
-
-    try {
-      await client.sendMessage(contactId, message);
-      msg.status = 'sent';
-      msg.sentAt = Date.now();
-      console.log(`✓ Message sent to ${contactName}`);
-    } catch (err) {
-      msg.status = 'failed';
-      msg.error = err.message;
-      console.error(`✗ Failed to send to ${contactName}:`, err.message);
-    }
-
-    checkAutoShutdown();
-  }, delay);
-
-  scheduledMessages.push({ id, contactId, contactName, message, sendAt: sendTime, status: 'pending', timer });
+  const msg = { id, contactId, contactName, message, sendAt: sendTime, status: 'pending', timer: null };
+  scheduledMessages.push(msg);
+  armTimer(msg);
+  saveQueue();
 
   res.json({ id, contactId, contactName, message, sendAt: sendTime, status: 'pending' });
 });
 
-// DELETE /api/schedule/:id
 app.delete('/api/schedule/:id', (req, res) => {
   const { id } = req.params;
   const idx = scheduledMessages.findIndex((m) => m.id === id);
@@ -196,24 +247,24 @@ app.delete('/api/schedule/:id', (req, res) => {
 
   const msg = scheduledMessages[idx];
   if (msg.status === 'pending' && msg.timer) clearTimeout(msg.timer);
-
   scheduledMessages.splice(idx, 1);
+  saveQueue();
   res.json({ success: true });
 });
 
-// POST /api/shutdown
 app.post('/api/shutdown', (_req, res) => {
   res.json({ success: true });
   setTimeout(performShutdown, 500);
 });
 
-// POST /api/cancel-shutdown
 app.post('/api/cancel-shutdown', (_req, res) => {
   cancelAutoShutdown();
   res.json({ success: true });
 });
 
 // ── Start ──────────────────────────────────────────────────────────────────
+loadQueue(); // show queued messages in UI immediately, before WA finishes connecting
+
 const PORT = 3000;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
