@@ -178,8 +178,9 @@ async function performShutdown() {
   process.exit(0);
 }
 
-// Clean exit on SIGTERM (sent by ./start.sh --restart)
+// Clean exit on SIGTERM (sent by ./start.sh --restart) or SIGINT (Ctrl+C on direct node run)
 process.on('SIGTERM', performShutdown);
+process.on('SIGINT', performShutdown);
 
 // ── API Routes ─────────────────────────────────────────────────────────────
 
