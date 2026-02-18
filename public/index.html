@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WhatsApp Scheduler</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      color: #1c1e21;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #075e54;
+      color: white;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 4px rgba(0,0,0,.2);
+    }
+
+    header h1 { font-size: 1.3rem; font-weight: 600; }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: .875rem;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #aaa;
+      flex-shrink: 0;
+    }
+    .dot.green  { background: #4caf50; }
+    .dot.yellow { background: #ff9800; }
+    .dot.red    { background: #f44336; }
+
+    main {
+      max-width: 680px;
+      margin: 24px auto;
+      padding: 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.1);
+    }
+
+    .card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #075e54;
+    }
+
+    /* QR card */
+    #qr-card { text-align: center; }
+    #qr-img {
+      max-width: 240px;
+      margin: 16px auto;
+      display: block;
+      border: 4px solid #f0f2f5;
+      border-radius: 8px;
+    }
+    #qr-card p { color: #666; font-size: .9rem; line-height: 1.6; }
+
+    /* Connecting card */
+    #connecting-card { text-align: center; padding: 40px 24px; }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid #f0f2f5;
+      border-top-color: #075e54;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #connecting-card p { color: #666; }
+
+    /* Shutdown banner */
+    #shutdown-banner {
+      background: #fff3e0;
+      border: 1px solid #ff9800;
+      border-radius: 12px;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    #shutdown-banner .banner-text { font-size: .9rem; color: #e65100; }
+    #shutdown-banner strong { display: block; font-size: 1rem; margin-bottom: 2px; }
+
+    /* Form */
+    .form-group { margin-bottom: 16px; }
+
+    label {
+      display: block;
+      font-size: .875rem;
+      font-weight: 500;
+      margin-bottom: 6px;
+      color: #444;
+    }
+
+    input[type="text"],
+    input[type="datetime-local"],
+    textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: .95rem;
+      font-family: inherit;
+      transition: border-color .2s;
+      outline: none;
+      background: white;
+    }
+    input:focus, textarea:focus { border-color: #075e54; }
+    textarea { resize: vertical; min-height: 80px; }
+
+    /* Contact autocomplete */
+    .contact-wrapper { position: relative; }
+    #contact-dropdown {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.1);
+      z-index: 100;
+      max-height: 220px;
+      overflow-y: auto;
+      display: none;
+    }
+    .contact-item {
+      padding: 10px 12px;
+      cursor: pointer;
+      font-size: .9rem;
+    }
+    .contact-item:hover { background: #f0f2f5; }
+    .contact-name { font-weight: 500; }
+    .contact-number { font-size: .8rem; color: #888; }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: .95rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+      transition: opacity .2s, transform .1s;
+    }
+    .btn:active  { transform: scale(.98); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .btn-primary {
+      background: #075e54;
+      color: white;
+      width: 100%;
+      padding: 12px;
+    }
+    .btn-primary:hover:not(:disabled) { background: #054d45; }
+
+    .btn-secondary {
+      background: white;
+      color: #075e54;
+      border: 1px solid #075e54;
+    }
+    .btn-secondary:hover { background: #f0f7f6; }
+
+    .btn-sm { padding: 6px 14px; font-size: .85rem; }
+
+    /* Scheduled list */
+    #msg-list { display: flex; flex-direction: column; gap: 12px; }
+
+    .msg-item {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .msg-info { flex: 1; min-width: 0; }
+    .msg-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+      flex-wrap: wrap;
+    }
+    .msg-name { font-weight: 600; font-size: .95rem; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: .75rem;
+      font-weight: 600;
+    }
+    .badge-pending { background: #fff3e0; color: #e65100; }
+    .badge-sent    { background: #e8f5e9; color: #2e7d32; }
+    .badge-failed  { background: #fce4ec; color: #c62828; }
+
+    .msg-text {
+      font-size: .875rem;
+      color: #555;
+      margin-bottom: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg-meta { font-size: .8rem; color: #888; }
+    .msg-actions { flex-shrink: 0; }
+
+    .btn-cancel {
+      background: none;
+      border: none;
+      font-size: 1.3rem;
+      color: #bbb;
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 4px;
+      line-height: 1;
+    }
+    .btn-cancel:hover { color: #f44336; background: #fce4ec; }
+
+    .empty-state {
+      text-align: center;
+      color: #aaa;
+      padding: 32px;
+      font-size: .9rem;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>WhatsApp Scheduler</h1>
+  <div class="status-badge">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">Connecting…</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- QR Card -->
+  <div class="card hidden" id="qr-card">
+    <h2>Scan QR Code</h2>
+    <img id="qr-img" src="" alt="QR Code">
+    <p>Open WhatsApp on your phone &rarr; Settings &rarr; Linked Devices &rarr; Link a Device</p>
+  </div>
+
+  <!-- Connecting Card -->
+  <div class="card" id="connecting-card">
+    <div class="spinner"></div>
+    <p id="connecting-text">Connecting to WhatsApp…</p>
+  </div>
+
+  <!-- Shutdown Banner -->
+  <div id="shutdown-banner" class="hidden">
+    <div class="banner-text">
+      <strong>Server shutting down</strong>
+      <span id="shutdown-countdown"></span>
+    </div>
+    <button class="btn btn-secondary btn-sm" id="keep-running-btn">Keep Running</button>
+  </div>
+
+  <!-- Compose Card -->
+  <div class="card hidden" id="compose-card">
+    <h2>Schedule a Message</h2>
+
+    <div class="form-group">
+      <label for="contact-input">Contact</label>
+      <div class="contact-wrapper">
+        <input type="text" id="contact-input" placeholder="Search by name or number…" autocomplete="off">
+        <div id="contact-dropdown"></div>
+      </div>
+      <input type="hidden" id="contact-id">
+      <input type="hidden" id="contact-name-hidden">
+    </div>
+
+    <div class="form-group">
+      <label for="message-input">Message</label>
+      <textarea id="message-input" placeholder="Type your message…"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label for="send-at">Send At</label>
+      <input type="datetime-local" id="send-at">
+    </div>
+
+    <button class="btn btn-primary" id="schedule-btn">Schedule Message</button>
+  </div>
+
+  <!-- Scheduled Messages Card -->
+  <div class="card hidden" id="list-card">
+    <h2>Scheduled Messages</h2>
+    <div id="msg-list"></div>
+  </div>
+
+</main>
+
+<script>
+  // ── State ─────────────────────────────────────────────────────────────────
+  let waStatus = 'initializing';
+  let scheduledMessages = [];
+  let shutdownAt = null;
+  let searchTimeout = null;
+  let selectedContact = null;
+  let shutdownCountdownInterval = null;
+
+  // ── Utilities ─────────────────────────────────────────────────────────────
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function formatCountdown(ms) {
+    if (ms <= 0) return 'now';
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    const h = Math.floor(m / 60);
+    const d = Math.floor(h / 24);
+    if (d > 0) return `in ${d}d ${h % 24}h`;
+    if (h > 0) return `in ${h}h ${m % 60}m`;
+    if (m > 0) return `in ${m}m ${s % 60}s`;
+    return `in ${s}s`;
+  }
+
+  function formatDateTime(ts) {
+    return new Date(ts).toLocaleString([], {
+      month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  }
+
+  // ── Polling ───────────────────────────────────────────────────────────────
+  async function pollStatus() {
+    try {
+      const [statusRes, scheduledRes] = await Promise.all([
+        fetch('/api/status'),
+        fetch('/api/scheduled'),
+      ]);
+      const status = await statusRes.json();
+      scheduledMessages = await scheduledRes.json();
+      updateStatus(status);
+      renderScheduled();
+    } catch (_) {
+      // server may be shutting down
+    }
+  }
+
+  function updateStatus(status) {
+    waStatus = status.wa;
+    shutdownAt = status.shutdownAt;
+
+    const dot           = document.getElementById('status-dot');
+    const text          = document.getElementById('status-text');
+    const qrCard        = document.getElementById('qr-card');
+    const connectingCard = document.getElementById('connecting-card');
+    const composeCard   = document.getElementById('compose-card');
+    const shutdownBanner = document.getElementById('shutdown-banner');
+    const connectingText = document.getElementById('connecting-text');
+
+    // Status badge
+    dot.className = 'dot';
+    if (waStatus === 'connected') {
+      dot.classList.add('green');
+      text.textContent = 'Connected';
+    } else if (waStatus === 'qr' || waStatus === 'loading') {
+      dot.classList.add('yellow');
+      text.textContent = waStatus === 'qr' ? 'Scan QR' : 'Connecting…';
+    } else {
+      dot.classList.add('red');
+      text.textContent = 'Disconnected';
+    }
+
+    // Card visibility
+    qrCard.classList.toggle('hidden', waStatus !== 'qr');
+    connectingCard.classList.toggle('hidden', waStatus !== 'initializing' && waStatus !== 'loading');
+    composeCard.classList.toggle('hidden', waStatus !== 'connected');
+
+    if (waStatus === 'loading') connectingText.textContent = 'Loading WhatsApp…';
+    else if (waStatus === 'initializing') connectingText.textContent = 'Initializing…';
+
+    if (waStatus === 'qr' && status.qr) {
+      document.getElementById('qr-img').src = status.qr;
+    }
+
+    // Shutdown banner
+    if (shutdownAt) {
+      shutdownBanner.classList.remove('hidden');
+      updateShutdownCountdown();
+      if (!shutdownCountdownInterval) {
+        shutdownCountdownInterval = setInterval(updateShutdownCountdown, 1000);
+      }
+    } else {
+      shutdownBanner.classList.add('hidden');
+      if (shutdownCountdownInterval) {
+        clearInterval(shutdownCountdownInterval);
+        shutdownCountdownInterval = null;
+      }
+    }
+  }
+
+  function updateShutdownCountdown() {
+    if (!shutdownAt) return;
+    const remaining = shutdownAt - Date.now();
+    const el = document.getElementById('shutdown-countdown');
+    if (remaining <= 0) {
+      el.textContent = 'Shutting down…';
+      return;
+    }
+    const s = Math.ceil(remaining / 1000);
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    el.textContent = m > 0
+      ? `Shutting down in ${m}m ${sec}s`
+      : `Shutting down in ${sec}s`;
+  }
+
+  // ── Render scheduled messages ─────────────────────────────────────────────
+  function renderScheduled() {
+    const list = document.getElementById('msg-list');
+    const listCard = document.getElementById('list-card');
+
+    if (waStatus !== 'connected' || scheduledMessages.length === 0) {
+      listCard.classList.add('hidden');
+      return;
+    }
+    listCard.classList.remove('hidden');
+
+    list.innerHTML = scheduledMessages.map((msg) => {
+      const isPending  = msg.status === 'pending';
+      const countdown  = isPending ? formatCountdown(msg.sendAt - Date.now()) : '';
+      const badgeClass = `badge-${msg.status}`;
+
+      return `
+        <div class="msg-item" data-id="${escapeHtml(msg.id)}">
+          <div class="msg-info">
+            <div class="msg-header">
+              <span class="msg-name">${escapeHtml(msg.contactName)}</span>
+              <span class="badge ${badgeClass}">${escapeHtml(msg.status)}</span>
+            </div>
+            <div class="msg-text">${escapeHtml(msg.message)}</div>
+            <div class="msg-meta">
+              ${isPending
+                ? `${escapeHtml(formatDateTime(msg.sendAt))} (${escapeHtml(countdown)})`
+                : escapeHtml(formatDateTime(msg.sendAt))}
+            </div>
+          </div>
+          ${isPending ? `
+            <div class="msg-actions">
+              <button class="btn-cancel" data-cancel="${escapeHtml(msg.id)}" title="Cancel">&times;</button>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Event delegation — cancel buttons
+  document.getElementById('msg-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-cancel]');
+    if (btn) cancelMessage(btn.dataset.cancel);
+  });
+
+  async function cancelMessage(id) {
+    try {
+      await fetch(`/api/schedule/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await pollStatus();
+    } catch (_) {
+      alert('Failed to cancel message');
+    }
+  }
+
+  // ── Contact search ────────────────────────────────────────────────────────
+  const contactInput = document.getElementById('contact-input');
+  const dropdown     = document.getElementById('contact-dropdown');
+
+  contactInput.addEventListener('input', () => {
+    clearTimeout(searchTimeout);
+    const q = contactInput.value.trim();
+
+    if (!q) {
+      dropdown.style.display = 'none';
+      selectedContact = null;
+      document.getElementById('contact-id').value = '';
+      return;
+    }
+
+    // If user edits after selecting, clear selection
+    if (selectedContact && contactInput.value !== selectedContact.name) {
+      selectedContact = null;
+      document.getElementById('contact-id').value = '';
+    }
+
+    searchTimeout = setTimeout(() => searchContacts(q), 200);
+  });
+
+  async function searchContacts(q) {
+    try {
+      const res = await fetch(`/api/contacts?q=${encodeURIComponent(q)}`);
+      renderDropdown(await res.json());
+    } catch (_) {
+      dropdown.style.display = 'none';
+    }
+  }
+
+  function renderDropdown(contacts) {
+    if (contacts.length === 0) {
+      dropdown.style.display = 'none';
+      return;
+    }
+    dropdown.innerHTML = contacts.map((c) => `
+      <div class="contact-item"
+           data-id="${escapeHtml(c.id)}"
+           data-name="${escapeHtml(c.name)}">
+        <div class="contact-name">${escapeHtml(c.name)}</div>
+        ${c.number ? `<div class="contact-number">${escapeHtml(c.number)}</div>` : ''}
+      </div>
+    `).join('');
+    dropdown.style.display = 'block';
+  }
+
+  // Event delegation — dropdown items
+  dropdown.addEventListener('click', (e) => {
+    const item = e.target.closest('.contact-item');
+    if (!item) return;
+    selectedContact = { id: item.dataset.id, name: item.dataset.name };
+    contactInput.value = selectedContact.name;
+    document.getElementById('contact-id').value = selectedContact.id;
+    document.getElementById('contact-name-hidden').value = selectedContact.name;
+    dropdown.style.display = 'none';
+  });
+
+  // Close dropdown on outside click
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.contact-wrapper')) dropdown.style.display = 'none';
+  });
+
+  // ── Default date/time ─────────────────────────────────────────────────────
+  function setDefaultDateTime() {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    const pad = (n) => String(n).padStart(2, '0');
+    document.getElementById('send-at').value =
+      `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}T09:00`;
+  }
+
+  // ── Schedule message ──────────────────────────────────────────────────────
+  document.getElementById('schedule-btn').addEventListener('click', scheduleMessage);
+
+  async function scheduleMessage() {
+    const contactId   = document.getElementById('contact-id').value;
+    const contactName = document.getElementById('contact-name-hidden').value;
+    const message     = document.getElementById('message-input').value.trim();
+    const sendAt      = document.getElementById('send-at').value;
+
+    if (!contactId)             return alert('Please select a contact from the dropdown');
+    if (!message)               return alert('Please enter a message');
+    if (!sendAt)                return alert('Please set a send time');
+    if (new Date(sendAt).getTime() <= Date.now()) return alert('Send time must be in the future');
+
+    const btn = document.getElementById('schedule-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scheduling…';
+
+    try {
+      const res = await fetch('/api/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId, contactName, message, sendAt: new Date(sendAt).getTime() }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || 'Failed to schedule message');
+        return;
+      }
+
+      // Reset form
+      contactInput.value = '';
+      document.getElementById('contact-id').value = '';
+      document.getElementById('contact-name-hidden').value = '';
+      document.getElementById('message-input').value = '';
+      selectedContact = null;
+      setDefaultDateTime();
+      await pollStatus();
+    } catch (_) {
+      alert('Failed to schedule message');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Schedule Message';
+    }
+  }
+
+  // ── Cancel shutdown ───────────────────────────────────────────────────────
+  document.getElementById('keep-running-btn').addEventListener('click', cancelShutdown);
+
+  async function cancelShutdown() {
+    try {
+      await fetch('/api/cancel-shutdown', { method: 'POST' });
+      shutdownAt = null;
+      document.getElementById('shutdown-banner').classList.add('hidden');
+      if (shutdownCountdownInterval) {
+        clearInterval(shutdownCountdownInterval);
+        shutdownCountdownInterval = null;
+      }
+    } catch (_) {
+      alert('Failed to cancel shutdown');
+    }
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  setDefaultDateTime();
+  pollStatus();
+  setInterval(pollStatus, 3000);
+</script>
+</body>
+</html>
