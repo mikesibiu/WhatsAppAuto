@@ -13,6 +13,11 @@ if [ "$1" = "--restart" ]; then
       sleep 0.5
       kill -0 "$(cat server.pid)" 2>/dev/null || { echo "Stopped."; break; }
     done
+    if kill -0 "$(cat server.pid)" 2>/dev/null; then
+      echo "Error: server (PID $(cat server.pid)) did not stop within 5 seconds. Aborting."
+      echo "Force-stop with: kill -9 $(cat server.pid)"
+      exit 1
+    fi
   else
     echo "No running server found, starting fresh."
   fi
