@@ -54,9 +54,14 @@ client.on('ready', async () => {
 
   try {
     const all = await client.getContacts();
-    contacts = all.filter(
-      (c) => c.isMyContact && !c.isGroup && c.id && c.id.server === 'c.us' && c.name
-    );
+    contacts = all
+      .filter((c) => c.isMyContact && !c.isGroup && c.id && c.id.server === 'c.us')
+      .filter((c) => c.name || c.pushname || c.number)
+      .sort((a, b) => {
+        const nameA = (a.name || a.pushname || '').toLowerCase();
+        const nameB = (b.name || b.pushname || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
     console.log(`Loaded ${contacts.length} contacts`);
   } catch (err) {
     console.error('Error loading contacts:', err);
@@ -109,22 +114,24 @@ app.get('/api/status', (_req, res) => {
 // GET /api/contacts?q=
 app.get('/api/contacts', (req, res) => {
   const q = (req.query.q || '').toLowerCase().trim();
-  if (!q) return res.json([]);
 
-  const results = contacts
-    .filter(
-      (c) =>
-        (c.name && c.name.toLowerCase().includes(q)) ||
-        (c.number && c.number.includes(q))
-    )
-    .slice(0, 20)
-    .map((c) => ({
+  // Empty query → return first 50 for browsing (already sorted alphabetically)
+  const pool = q
+    ? contacts.filter(
+        (c) =>
+          (c.name && c.name.toLowerCase().includes(q)) ||
+          (c.pushname && c.pushname.toLowerCase().includes(q)) ||
+          (c.number && c.number.includes(q))
+      )
+    : contacts;
+
+  res.json(
+    pool.slice(0, 50).map((c) => ({
       id: c.id._serialized,
       name: c.name || c.pushname || c.number,
       number: c.number,
-    }));
-
-  res.json(results);
+    }))
+  );
 });
 
 // GET /api/scheduled

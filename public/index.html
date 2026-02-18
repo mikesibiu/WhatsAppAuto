@@ -297,7 +297,7 @@
     <div class="form-group">
       <label for="contact-input">Contact</label>
       <div class="contact-wrapper">
-        <input type="text" id="contact-input" placeholder="Search by name or number…" autocomplete="off">
+        <input type="text" id="contact-input" placeholder="Click to browse or type to search…" autocomplete="off">
         <div id="contact-dropdown"></div>
       </div>
       <input type="hidden" id="contact-id">
@@ -507,16 +507,14 @@
   const contactInput = document.getElementById('contact-input');
   const dropdown     = document.getElementById('contact-dropdown');
 
+  // Show all contacts on focus (browse mode)
+  contactInput.addEventListener('focus', () => {
+    if (!contactInput.value.trim()) searchContacts('');
+  });
+
   contactInput.addEventListener('input', () => {
     clearTimeout(searchTimeout);
     const q = contactInput.value.trim();
-
-    if (!q) {
-      dropdown.style.display = 'none';
-      selectedContact = null;
-      document.getElementById('contact-id').value = '';
-      return;
-    }
 
     // If user edits after selecting, clear selection
     if (selectedContact && contactInput.value !== selectedContact.name) {
@@ -524,7 +522,12 @@
       document.getElementById('contact-id').value = '';
     }
 
-    searchTimeout = setTimeout(() => searchContacts(q), 200);
+    // Empty → browse all; otherwise debounce search
+    if (!q) {
+      searchTimeout = setTimeout(() => searchContacts(''), 100);
+    } else {
+      searchTimeout = setTimeout(() => searchContacts(q), 200);
+    }
   });
 
   async function searchContacts(q) {
