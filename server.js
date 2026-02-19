@@ -125,18 +125,28 @@ client.on('ready', async () => {
   console.log('WhatsApp client ready');
 
   try {
-    const all = await client.getContacts();
-    contacts = all
+    const [allContacts, allChats] = await Promise.all([
+      client.getContacts(),
+      client.getChats(),
+    ]);
+
+    const individuals = allContacts
       .filter((c) => c.isMyContact && !c.isGroup && c.id && c.id.server === 'c.us')
-      .filter((c) => c.name || c.pushname || c.number)
-      .sort((a, b) => {
-        const nameA = (a.name || a.pushname || '').toLowerCase();
-        const nameB = (b.name || b.pushname || '').toLowerCase();
-        return nameA.localeCompare(nameB);
-      });
-    console.log(`Loaded ${contacts.length} contacts`);
+      .filter((c) => c.name || c.pushname || c.number);
+
+    const groups = allChats
+      .filter((c) => c.isGroup && c.name);
+
+    // Merge and sort A–Z together
+    contacts = [...individuals, ...groups].sort((a, b) => {
+      const nameA = (a.name || a.pushname || '').toLowerCase();
+      const nameB = (b.name || b.pushname || '').toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+
+    console.log(`Loaded ${individuals.length} contacts and ${groups.length} groups`);
   } catch (err) {
-    console.error('Error loading contacts:', err);
+    console.error('Error loading contacts/groups:', err);
   }
 
   rescheduleFromQueue();
@@ -204,7 +214,8 @@ app.get('/api/contacts', (req, res) => {
     pool.slice(0, 50).map((c) => ({
       id: c.id._serialized,
       name: c.name || c.pushname || c.number,
-      number: c.number,
+      number: c.number || null,
+      isGroup: !!c.isGroup,
     }))
   );
 });

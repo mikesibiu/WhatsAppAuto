@@ -155,8 +155,17 @@
       font-size: .9rem;
     }
     .contact-item:hover { background: #f0f2f5; }
-    .contact-name { font-weight: 500; }
+    .contact-name { font-weight: 500; display: flex; align-items: center; gap: 6px; }
     .contact-number { font-size: .8rem; color: #888; }
+    .group-tag {
+      font-size: .7rem;
+      font-weight: 600;
+      background: #e3f2fd;
+      color: #1565c0;
+      padding: 1px 6px;
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
 
     /* Buttons */
     .btn {
@@ -549,7 +558,10 @@
       <div class="contact-item"
            data-id="${escapeHtml(c.id)}"
            data-name="${escapeHtml(c.name)}">
-        <div class="contact-name">${escapeHtml(c.name)}</div>
+        <div class="contact-name">
+          ${escapeHtml(c.name)}
+          ${c.isGroup ? '<span class="group-tag">group</span>' : ''}
+        </div>
         ${c.number ? `<div class="contact-number">${escapeHtml(c.number)}</div>` : ''}
       </div>
     `).join('');
