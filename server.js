@@ -1,10 +1,20 @@
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
 const crypto = require('crypto');
+const multer = require('multer');
+
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: UPLOADS_DIR,
+  filename: (_req, file, cb) => cb(null, `${crypto.randomUUID()}-${file.originalname}`),
+});
+const upload = multer({ storage, limits: { fileSize: 64 * 1024 * 1024 } });
 
 const app = express();
 app.use(express.json());
@@ -54,7 +64,12 @@ function armTimer(msg) {
   msg.timer = setTimeout(async () => {
     if (msg.status !== 'pending') return;
     try {
-      await client.sendMessage(msg.contactId, msg.message);
+      if (msg.filePath) {
+        const media = MessageMedia.fromFilePath(msg.filePath);
+        await client.sendMessage(msg.contactId, media, msg.message ? { caption: msg.message } : {});
+      } else {
+        await client.sendMessage(msg.contactId, msg.message);
+      }
       msg.status = 'sent';
       msg.sentAt = Date.now();
       anySentThisSession = true;
@@ -64,6 +79,10 @@ function armTimer(msg) {
       msg.error = err.message;
       anySentThisSession = true; // failed attempts still count for shutdown logic
       console.error(`✗ Failed to send to ${msg.contactName}:`, err.message);
+    }
+    if (msg.filePath) {
+      fs.unlink(msg.filePath, () => {});
+      msg.filePath = null;
     }
     saveQueue();
     checkAutoShutdown();
@@ -78,6 +97,10 @@ function rescheduleFromQueue() {
     if (msg.status !== 'pending') return;
     if (msg.sendAt <= now) {
       msg.status = 'missed';
+      if (msg.filePath) {
+        fs.unlink(msg.filePath, () => {});
+        msg.filePath = null;
+      }
       missed++;
     } else {
       armTimer(msg);
@@ -188,8 +211,11 @@ async function performShutdown() {
   process.exit(0);
 }
 
-// Clean exit on SIGTERM (sent by ./start.sh --restart) or SIGINT (Ctrl+C on direct node run)
-process.on('SIGTERM', performShutdown);
+// Clean exit on SIGUSR1 (sent by ./start.sh restart) or SIGINT (Ctrl+C on direct node run).
+// SIGTERM is intentionally NOT caught — macOS Terminal sends it when closing a tab,
+// and nohup only blocks SIGHUP.  The queue is persisted so no messages are lost on a
+// hard kill; the OS will clean up the Puppeteer/Chrome child process automatically.
+process.on('SIGUSR1', performShutdown);
 process.on('SIGINT', performShutdown);
 
 // ── API Routes ─────────────────────────────────────────────────────────────
@@ -224,14 +250,18 @@ app.get('/api/scheduled', (_req, res) => {
   res.json(scheduledMessages.map(({ timer, ...m }) => m));
 });
 
-app.post('/api/schedule', (req, res) => {
+app.post('/api/schedule', upload.single('file'), (req, res) => {
   const { contactId, contactName, message, sendAt } = req.body;
+  const hasMessage = message && message.trim();
 
-  if (!contactId || !message || !sendAt) {
+  if (!contactId || !sendAt) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
+  if (!hasMessage && !req.file) {
+    return res.status(400).json({ error: 'Provide a message or attach a file' });
+  }
 
-  const sendTime = new Date(sendAt).getTime();
+  const sendTime = Number(sendAt);
   if (sendTime - Date.now() <= 0) {
     return res.status(400).json({ error: 'sendAt must be in the future' });
   }
@@ -243,12 +273,22 @@ app.post('/api/schedule', (req, res) => {
   cancelAutoShutdown();
 
   const id = crypto.randomUUID();
-  const msg = { id, contactId, contactName, message, sendAt: sendTime, status: 'pending', timer: null };
+  const msg = {
+    id,
+    contactId,
+    contactName,
+    message: hasMessage ? message.trim() : '',
+    sendAt: sendTime,
+    status: 'pending',
+    timer: null,
+    filePath: req.file ? req.file.path : null,
+    fileName: req.file ? req.file.originalname : null,
+  };
   scheduledMessages.push(msg);
   armTimer(msg);
   saveQueue();
 
-  res.json({ id, contactId, contactName, message, sendAt: sendTime, status: 'pending' });
+  res.json({ id, contactId, contactName, message: msg.message, sendAt: sendTime, status: 'pending', fileName: msg.fileName });
 });
 
 app.delete('/api/schedule/:id', (req, res) => {
@@ -259,6 +299,7 @@ app.delete('/api/schedule/:id', (req, res) => {
 
   const msg = scheduledMessages[idx];
   if (msg.status === 'pending' && msg.timer) clearTimeout(msg.timer);
+  if (msg.filePath) fs.unlink(msg.filePath, () => {});
   scheduledMessages.splice(idx, 1);
   saveQueue();
   res.json({ success: true });

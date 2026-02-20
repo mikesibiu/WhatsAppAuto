@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 # If already running, stop it first (queue is safe — persisted in queue.json)
 if [ -f server.pid ] && kill -0 "$(cat server.pid)" 2>/dev/null; then
   echo "Stopping running server (PID $(cat server.pid))..."
-  kill "$(cat server.pid)"
+  kill -SIGUSR1 "$(cat server.pid)"
   for i in $(seq 1 10); do
     sleep 0.5
     kill -0 "$(cat server.pid)" 2>/dev/null || { echo "Stopped."; break; }
@@ -29,7 +29,7 @@ nohup node server.js >> server.log 2>&1 &
 NODE_PID=$!
 echo $NODE_PID > server.pid
 
-caffeinate -s -w $NODE_PID &
+nohup caffeinate -s -w $NODE_PID > /dev/null 2>&1 &
 disown $NODE_PID
 disown $!
 
