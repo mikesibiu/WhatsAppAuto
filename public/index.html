@@ -315,8 +315,18 @@
     </div>
 
     <div class="form-group">
-      <label for="message-input">Message</label>
+      <label for="message-input">Message <span id="msg-optional" style="font-weight:400;color:#888;font-size:.85rem;display:none;">(optional if file attached)</span></label>
       <textarea id="message-input" placeholder="Type your message…"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>Attachment <span style="font-weight:400;color:#888;font-size:.85rem;">(optional)</span></label>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <input type="file" id="file-input" style="display:none">
+        <button type="button" class="btn btn-secondary btn-sm" id="attach-btn">📎 Attach File</button>
+        <span id="file-name" style="font-size:.875rem;color:#555;"></span>
+        <button type="button" id="clear-file-btn" style="display:none;background:none;border:none;color:#bbb;font-size:1.1rem;cursor:pointer;padding:0 4px;" title="Remove attachment">&times;</button>
+      </div>
     </div>
 
     <div class="form-group">
@@ -597,14 +607,39 @@
   // ── Schedule message ──────────────────────────────────────────────────────
   document.getElementById('schedule-btn').addEventListener('click', scheduleMessage);
 
+  // ── File attachment ────────────────────────────────────────────────────────
+  const fileInput     = document.getElementById('file-input');
+  const attachBtn     = document.getElementById('attach-btn');
+  const fileNameSpan  = document.getElementById('file-name');
+  const clearFileBtn  = document.getElementById('clear-file-btn');
+  const msgOptional   = document.getElementById('msg-optional');
+
+  attachBtn.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) {
+      fileNameSpan.textContent = fileInput.files[0].name;
+      clearFileBtn.style.display = 'inline';
+      msgOptional.style.display = 'inline';
+    }
+  });
+
+  clearFileBtn.addEventListener('click', () => {
+    fileInput.value = '';
+    fileNameSpan.textContent = '';
+    clearFileBtn.style.display = 'none';
+    msgOptional.style.display = 'none';
+  });
+
   async function scheduleMessage() {
     const contactId   = document.getElementById('contact-id').value;
     const contactName = document.getElementById('contact-name-hidden').value;
     const message     = document.getElementById('message-input').value.trim();
     const sendAt      = document.getElementById('send-at').value;
+    const file        = fileInput.files[0];
 
     if (!contactId)             return alert('Please select a contact from the dropdown');
-    if (!message)               return alert('Please enter a message');
+    if (!message && !file)      return alert('Please enter a message or attach a file');
     if (!sendAt)                return alert('Please set a send time');
     if (new Date(sendAt).getTime() <= Date.now()) return alert('Send time must be in the future');
 
@@ -613,11 +648,22 @@
     btn.textContent = 'Scheduling…';
 
     try {
-      const res = await fetch('/api/schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contactId, contactName, message, sendAt: new Date(sendAt).getTime() }),
-      });
+      let res;
+      if (file) {
+        const fd = new FormData();
+        fd.append('contactId', contactId);
+        fd.append('contactName', contactName);
+        fd.append('message', message);
+        fd.append('sendAt', new Date(sendAt).getTime());
+        fd.append('file', file);
+        res = await fetch('/api/schedule', { method: 'POST', body: fd });
+      } else {
+        res = await fetch('/api/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactId, contactName, message, sendAt: new Date(sendAt).getTime() }),
+        });
+      }
 
       if (!res.ok) {
         const err = await res.json();
@@ -630,6 +676,10 @@
       document.getElementById('contact-id').value = '';
       document.getElementById('contact-name-hidden').value = '';
       document.getElementById('message-input').value = '';
+      fileInput.value = '';
+      fileNameSpan.textContent = '';
+      clearFileBtn.style.display = 'none';
+      msgOptional.style.display = 'none';
       selectedContact = null;
       setDefaultDateTime();
       await pollStatus();

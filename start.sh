@@ -12,9 +12,9 @@ if [ -f server.pid ] && kill -0 "$(cat server.pid)" 2>/dev/null; then
     kill -0 "$(cat server.pid)" 2>/dev/null || { echo "Stopped."; break; }
   done
   if kill -0 "$(cat server.pid)" 2>/dev/null; then
-    echo "Error: server (PID $(cat server.pid)) did not stop within 5 seconds. Aborting."
-    echo "Force-stop with: kill -9 $(cat server.pid)"
-    exit 1
+    echo "Graceful stop timed out — force-killing PID $(cat server.pid)..."
+    kill -9 "$(cat server.pid)" 2>/dev/null || true
+    sleep 0.5
   fi
 fi
 

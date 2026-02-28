@@ -4,3 +4,4 @@ node_modules/
 server.pid
 server.log
 queue.json
+contacts.json

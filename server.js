@@ -29,7 +29,43 @@ let shutdownTimer = null;
 let shutdownAt = null;
 let anySentThisSession = false; // guards auto-shutdown from firing on a bare restart
 
-const QUEUE_FILE = path.join(__dirname, 'queue.json');
+const QUEUE_FILE    = path.join(__dirname, 'queue.json');
+const CONTACTS_FILE = path.join(__dirname, 'contacts.json');
+
+// ── Contact cache ──────────────────────────────────────────────────────────
+
+function saveContactsCache() {
+  try {
+    const serialisable = contacts.map((c) => ({
+      id:       c.id?._serialized ?? c.id,
+      name:     c.name || c.pushname || '',
+      number:   c.number || '',
+      isGroup:  !!c.isGroup,
+    }));
+    fs.writeFileSync(CONTACTS_FILE, JSON.stringify(serialisable, null, 2));
+  } catch (e) {
+    console.error('Failed to save contacts cache:', e.message);
+  }
+}
+
+function loadContactsCache() {
+  try {
+    if (!fs.existsSync(CONTACTS_FILE)) return;
+    const cached = JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf8'));
+    if (!cached.length) return;
+    // Use cached entries as stand-ins until real objects arrive from WhatsApp.
+    contacts = cached.map((c) => ({
+      id: { _serialized: c.id },
+      name: c.name,
+      number: c.number,
+      isGroup: c.isGroup,
+      _fromCache: true,
+    }));
+    console.log(`Loaded ${cached.length} contacts from local cache`);
+  } catch (e) {
+    console.error('Failed to load contacts cache:', e.message);
+  }
+}
 
 // ── Queue persistence ──────────────────────────────────────────────────────
 
@@ -142,11 +178,9 @@ client.on('auth_failure', (msg) => {
   console.error('Auth failure:', msg);
 });
 
-client.on('ready', async () => {
-  waStatus = 'connected';
-  qrDataUrl = null;
-  console.log('WhatsApp client ready');
+let contactRefreshTimer = null;
 
+async function refreshContacts(label = 'Refreshed') {
   try {
     const [allContacts, allChats] = await Promise.all([
       client.getContacts(),
@@ -160,19 +194,30 @@ client.on('ready', async () => {
     const groups = allChats
       .filter((c) => c.isGroup && c.name);
 
-    // Merge and sort A–Z together
     contacts = [...individuals, ...groups].sort((a, b) => {
       const nameA = (a.name || a.pushname || '').toLowerCase();
       const nameB = (b.name || b.pushname || '').toLowerCase();
       return nameA.localeCompare(nameB);
     });
 
-    console.log(`Loaded ${individuals.length} contacts and ${groups.length} groups`);
+    console.log(`${label} ${individuals.length} contacts and ${groups.length} groups`);
+    saveContactsCache();
   } catch (err) {
     console.error('Error loading contacts/groups:', err);
   }
+}
 
+client.on('ready', async () => {
+  waStatus = 'connected';
+  qrDataUrl = null;
+  console.log('WhatsApp client ready');
+
+  await refreshContacts('Loaded');
   rescheduleFromQueue();
+
+  // Periodically re-sync contacts (catches new contacts added after initial link)
+  if (contactRefreshTimer) clearInterval(contactRefreshTimer);
+  contactRefreshTimer = setInterval(() => refreshContacts('Refreshed'), 2 * 60 * 1000);
 });
 
 client.on('disconnected', (reason) => {
@@ -205,8 +250,12 @@ function cancelAutoShutdown() {
 
 async function performShutdown() {
   console.log('Shutting down…');
+  if (contactRefreshTimer) clearInterval(contactRefreshTimer);
   try {
-    await client.destroy();
+    await Promise.race([
+      client.destroy(),
+      new Promise(resolve => setTimeout(resolve, 4000)),
+    ]);
   } catch (_) { /* ignore */ }
   process.exit(0);
 }
@@ -316,7 +365,8 @@ app.post('/api/cancel-shutdown', (_req, res) => {
 });
 
 // ── Start ──────────────────────────────────────────────────────────────────
-loadQueue(); // show queued messages in UI immediately, before WA finishes connecting
+loadQueue();          // show queued messages in UI immediately, before WA finishes connecting
+loadContactsCache();  // pre-populate contacts from last session so search works instantly
 
 const PORT = 3000;
 app.listen(PORT, () => {
