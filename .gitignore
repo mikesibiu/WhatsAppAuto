@@ -5,3 +5,8 @@ server.pid
 server.log
 queue.json
 contacts.json
+downloads/
+
+# KB temp files
+.kb/knowledge.db-wal
+.kb/knowledge.db-shm

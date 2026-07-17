@@ -343,6 +343,24 @@
     <div id="msg-list"></div>
   </div>
 
+  <!-- Download Images Card -->
+  <div class="card hidden" id="download-card">
+    <h2>Download Images &amp; Documents</h2>
+
+    <div class="form-group">
+      <label for="download-contact-input">Contact or Group</label>
+      <div class="contact-wrapper">
+        <input type="text" id="download-contact-input" placeholder="Click to browse or type to search…" autocomplete="off">
+        <div id="download-contact-dropdown"></div>
+      </div>
+      <input type="hidden" id="download-contact-id">
+      <input type="hidden" id="download-contact-name-hidden">
+    </div>
+
+    <button class="btn btn-primary" id="download-btn">Download Images</button>
+    <div id="download-result" style="margin-top:12px;font-size:.875rem;color:#555;"></div>
+  </div>
+
 </main>
 
 <script>
@@ -428,6 +446,7 @@
     qrCard.classList.toggle('hidden', waStatus !== 'qr');
     connectingCard.classList.toggle('hidden', waStatus !== 'initializing' && waStatus !== 'loading');
     composeCard.classList.toggle('hidden', waStatus !== 'connected');
+    document.getElementById('download-card').classList.toggle('hidden', waStatus !== 'connected');
 
     if (waStatus === 'loading') connectingText.textContent = 'Loading WhatsApp…';
     else if (waStatus === 'initializing') connectingText.textContent = 'Initializing…';
@@ -688,6 +707,115 @@
     } finally {
       btn.disabled = false;
       btn.textContent = 'Schedule Message';
+    }
+  }
+
+  // ── Download images ───────────────────────────────────────────────────────
+  const downloadContactInput = document.getElementById('download-contact-input');
+  const downloadDropdown     = document.getElementById('download-contact-dropdown');
+  let downloadSearchTimeout  = null;
+  let downloadSelectedContact = null;
+
+  downloadContactInput.addEventListener('focus', () => {
+    if (!downloadContactInput.value.trim()) searchDownloadContacts('');
+  });
+
+  downloadContactInput.addEventListener('input', () => {
+    clearTimeout(downloadSearchTimeout);
+    const q = downloadContactInput.value.trim();
+
+    if (downloadSelectedContact && downloadContactInput.value !== downloadSelectedContact.name) {
+      downloadSelectedContact = null;
+      document.getElementById('download-contact-id').value = '';
+    }
+
+    downloadSearchTimeout = setTimeout(() => searchDownloadContacts(q), q ? 200 : 100);
+  });
+
+  async function searchDownloadContacts(q) {
+    try {
+      const res = await fetch(`/api/contacts?q=${encodeURIComponent(q)}`);
+      renderDownloadDropdown(await res.json());
+    } catch (_) {
+      downloadDropdown.style.display = 'none';
+    }
+  }
+
+  function renderDownloadDropdown(contacts) {
+    if (contacts.length === 0) {
+      downloadDropdown.style.display = 'none';
+      return;
+    }
+    downloadDropdown.innerHTML = contacts.map((c) => `
+      <div class="contact-item"
+           data-id="${escapeHtml(c.id)}"
+           data-name="${escapeHtml(c.name)}">
+        <div class="contact-name">
+          ${escapeHtml(c.name)}
+          ${c.isGroup ? '<span class="group-tag">group</span>' : ''}
+        </div>
+        ${c.number ? `<div class="contact-number">${escapeHtml(c.number)}</div>` : ''}
+      </div>
+    `).join('');
+    downloadDropdown.style.display = 'block';
+  }
+
+  downloadDropdown.addEventListener('click', (e) => {
+    const item = e.target.closest('.contact-item');
+    if (!item) return;
+    downloadSelectedContact = { id: item.dataset.id, name: item.dataset.name };
+    downloadContactInput.value = downloadSelectedContact.name;
+    document.getElementById('download-contact-id').value = downloadSelectedContact.id;
+    document.getElementById('download-contact-name-hidden').value = downloadSelectedContact.name;
+    downloadDropdown.style.display = 'none';
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#download-card .contact-wrapper')) downloadDropdown.style.display = 'none';
+  });
+
+  document.getElementById('download-btn').addEventListener('click', downloadImages);
+
+  async function downloadImages() {
+    const contactId   = document.getElementById('download-contact-id').value;
+    const contactName = document.getElementById('download-contact-name-hidden').value;
+    const resultEl    = document.getElementById('download-result');
+
+    if (!contactId) return alert('Please select a contact or group from the dropdown');
+
+    const btn = document.getElementById('download-btn');
+    btn.disabled = true;
+    btn.textContent = 'Downloading…';
+    resultEl.textContent = 'Scanning chat history — this can take a while for large chats…';
+
+    try {
+      const res = await fetch('/api/download-images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId, contactName }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        resultEl.textContent = '';
+        alert(data.error || 'Failed to download images');
+        return;
+      }
+
+      if (data.count === 0 && data.documentCount === 0) {
+        resultEl.textContent = 'No images or documents found in this chat.';
+      } else {
+        const parts = [];
+        if (data.count > 0) parts.push(`${data.count} image(s) to ${data.folder}`);
+        if (data.documentCount > 0) parts.push(`${data.documentCount} document(s) to ${data.documentsFolder}`);
+        resultEl.textContent = `Downloaded ${parts.join(' and ')}`;
+      }
+    } catch (_) {
+      resultEl.textContent = '';
+      alert('Failed to download images');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Download Images';
     }
   }
 

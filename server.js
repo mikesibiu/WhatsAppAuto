@@ -10,6 +10,9 @@ const multer = require('multer');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
+const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
+fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,
   filename: (_req, file, cb) => cb(null, `${crypto.randomUUID()}-${file.originalname}`),
@@ -293,6 +296,59 @@ app.get('/api/contacts', (req, res) => {
       isGroup: !!c.isGroup,
     }))
   );
+});
+
+app.post('/api/download-images', async (req, res) => {
+  const { contactId, contactName } = req.body;
+
+  if (!contactId) return res.status(400).json({ error: 'Missing contactId' });
+  if (waStatus !== 'connected') return res.status(400).json({ error: 'WhatsApp not connected' });
+
+  try {
+    const chat = await client.getChatById(contactId);
+    const messages = await chat.fetchMessages({ limit: 100000 });
+    const imageMessages = messages.filter((m) => m.hasMedia && m.type === 'image');
+    const documentMessages = messages.filter((m) => m.hasMedia && m.type === 'document');
+
+    const safeName = (contactName || 'chat').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const folder = path.join(DOWNLOADS_DIR, `${safeName || 'chat'}-${Date.now()}`);
+    const documentsFolder = path.join(folder, 'documents');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.mkdirSync(documentsFolder, { recursive: true });
+
+    let savedImages = 0;
+    for (const msg of imageMessages) {
+      try {
+        const media = await msg.downloadMedia();
+        if (!media) continue;
+        const ext = (media.mimetype.split('/')[1] || 'jpg').split(';')[0];
+        fs.writeFileSync(path.join(folder, `${msg.timestamp}-${msg.id.id}.${ext}`), Buffer.from(media.data, 'base64'));
+        savedImages++;
+      } catch (e) {
+        console.error('Failed to download an image:', e.message);
+      }
+    }
+
+    let savedDocuments = 0;
+    for (const msg of documentMessages) {
+      try {
+        const media = await msg.downloadMedia();
+        if (!media) continue;
+        const ext = (media.filename && path.extname(media.filename)) || `.${(media.mimetype.split('/')[1] || 'bin').split(';')[0]}`;
+        const baseName = media.filename ? path.basename(media.filename, path.extname(media.filename)) : msg.id.id;
+        fs.writeFileSync(path.join(documentsFolder, `${msg.timestamp}-${baseName}${ext}`), Buffer.from(media.data, 'base64'));
+        savedDocuments++;
+      } catch (e) {
+        console.error('Failed to download a document:', e.message);
+      }
+    }
+
+    console.log(`Downloaded ${savedImages} image(s) and ${savedDocuments} document(s) from ${contactName || contactId} to ${folder}`);
+    res.json({ success: true, count: savedImages, documentCount: savedDocuments, folder, documentsFolder });
+  } catch (err) {
+    console.error('Error downloading images:', err);
+    res.status(500).json({ error: err.message || 'Failed to download images' });
+  }
 });
 
 app.get('/api/scheduled', (_req, res) => {
