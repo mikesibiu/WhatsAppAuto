@@ -67,10 +67,9 @@ doesn't exit while the user is reading.
 ### Cache
 
 `translations/<groupId>.json` (directory gitignored), keyed by message ID:
-`{ lang, translation, body, senderName, timestamp, type }`. Storing the
-original body and sender means cached history renders without re-fetching
-from WhatsApp when possible. Loaded lazily per group, written after each
-batch.
+`{ lang, translation }`. The feed always renders from the live
+`fetchMessages` result, so only the translation output is cached. Loaded
+lazily per group, written after each batch.
 
 ### Constraint: history fetching
 
