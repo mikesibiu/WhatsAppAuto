@@ -4,9 +4,12 @@
   "description": "Personal WhatsApp scheduled message tool",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.3",
+    "dotenv": "^17.4.2",
     "express": "^4.18.2",
     "multer": "^2.0.2",
     "qrcode": "^1.5.3",

@@ -10,3 +10,6 @@ downloads/
 # KB temp files
 .kb/knowledge.db-wal
 .kb/knowledge.db-shm
+.env
+translations/
+translate-groups.json
