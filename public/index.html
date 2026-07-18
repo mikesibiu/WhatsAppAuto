@@ -264,6 +264,89 @@
     }
 
     .hidden { display: none !important; }
+
+    /* Tabs */
+    .tabs {
+      max-width: 680px;
+      margin: 16px auto -8px;
+      padding: 0 16px;
+      display: flex;
+      gap: 8px;
+    }
+    .tab {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      background: #e4e6e9;
+      color: #555;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .tab.active { background: #075e54; color: white; }
+
+    /* Translate view */
+    .group-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #e3f2fd;
+      color: #1565c0;
+      border: 1px solid transparent;
+      border-radius: 16px;
+      padding: 5px 12px;
+      font-size: .85rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .group-chip.active { background: #075e54; color: white; }
+    .group-chip .chip-remove { color: inherit; opacity: .6; font-size: 1rem; line-height: 1; }
+    .group-chip .chip-remove:hover { opacity: 1; }
+    #group-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+    #feed {
+      height: 60vh;
+      overflow-y: auto;
+      background: #efe7dd;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .bubble {
+      background: white;
+      border-radius: 8px;
+      padding: 8px 12px;
+      max-width: 85%;
+      align-self: flex-start;
+      box-shadow: 0 1px 1px rgba(0,0,0,.08);
+    }
+    .bubble.from-me { background: #d9fdd3; align-self: flex-end; }
+    .bubble-sender { font-size: .78rem; font-weight: 700; color: #075e54; margin-bottom: 2px; }
+    .bubble-translation { font-size: .92rem; color: #1c1e21; white-space: pre-wrap; word-break: break-word; }
+    .bubble-original { font-size: .8rem; color: #999; margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+    .bubble-meta { font-size: .7rem; color: #aaa; margin-top: 4px; text-align: right; }
+    .lang-badge {
+      font-size: .65rem;
+      font-weight: 700;
+      background: #eee;
+      color: #777;
+      padding: 1px 5px;
+      border-radius: 6px;
+      margin-left: 6px;
+      text-transform: uppercase;
+    }
+    .bubble-media { font-size: .85rem; color: #888; font-style: italic; }
+    .bubble-failed { font-size: .8rem; color: #c62828; }
+    #feed-loading { text-align: center; color: #888; font-size: .8rem; padding: 6px; }
+    #translate-error {
+      background: #fce4ec; color: #c62828; border-radius: 8px;
+      padding: 10px 14px; font-size: .85rem; margin-bottom: 12px;
+    }
   </style>
 </head>
 <body>
@@ -275,6 +358,11 @@
     <span id="status-text">Connecting…</span>
   </div>
 </header>
+
+<nav class="tabs hidden" id="tab-bar">
+  <button class="tab active" data-tab="scheduler">Scheduler</button>
+  <button class="tab" data-tab="translate">Translate</button>
+</nav>
 
 <main>
 
@@ -361,6 +449,28 @@
     <div id="download-result" style="margin-top:12px;font-size:.875rem;color:#555;"></div>
   </div>
 
+  <!-- Translate: group picker -->
+  <div class="card hidden" id="translate-groups-card">
+    <h2>Translate Groups</h2>
+    <div class="form-group">
+      <label for="group-search-input">Add a group</label>
+      <div class="contact-wrapper">
+        <input type="text" id="group-search-input" placeholder="Click to browse or type to search groups…" autocomplete="off">
+        <div id="group-search-dropdown" style="position:absolute;top:calc(100% + 4px);left:0;right:0;background:white;border:1px solid #ddd;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:100;max-height:220px;overflow-y:auto;display:none;"></div>
+      </div>
+    </div>
+    <div id="group-chips"></div>
+  </div>
+
+  <!-- Translate: feed -->
+  <div class="card hidden" id="translate-feed-card">
+    <h2 id="feed-title">Messages</h2>
+    <div id="translate-error" class="hidden"></div>
+    <div id="feed">
+      <div id="feed-loading" class="hidden">Loading older messages…</div>
+    </div>
+  </div>
+
 </main>
 
 <script>
@@ -371,6 +481,13 @@
   let searchTimeout = null;
   let selectedContact = null;
   let shutdownCountdownInterval = null;
+  let activeTab = 'scheduler';
+  let translateGroups = [];        // saved [{id, name}]
+  let activeGroup = null;          // currently viewed {id, name}
+  let feedLimit = 50;
+  let feedPollInterval = null;
+  let feedMessages = [];
+  let feedFetchInFlight = false;
 
   // ── Utilities ─────────────────────────────────────────────────────────────
   function escapeHtml(str) {
@@ -445,8 +562,7 @@
     // Card visibility
     qrCard.classList.toggle('hidden', waStatus !== 'qr');
     connectingCard.classList.toggle('hidden', waStatus !== 'initializing' && waStatus !== 'loading');
-    composeCard.classList.toggle('hidden', waStatus !== 'connected');
-    document.getElementById('download-card').classList.toggle('hidden', waStatus !== 'connected');
+    applyTabVisibility();
 
     if (waStatus === 'loading') connectingText.textContent = 'Loading WhatsApp…';
     else if (waStatus === 'initializing') connectingText.textContent = 'Initializing…';
@@ -492,7 +608,7 @@
     const list = document.getElementById('msg-list');
     const listCard = document.getElementById('list-card');
 
-    if (waStatus !== 'connected' || scheduledMessages.length === 0) {
+    if (waStatus !== 'connected' || activeTab !== 'scheduler' || scheduledMessages.length === 0) {
       listCard.classList.add('hidden');
       return;
     }
@@ -834,6 +950,228 @@
     } catch (_) {
       alert('Failed to cancel shutdown');
     }
+  }
+
+  // ── Tabs ──────────────────────────────────────────────────────────────────
+  const tabBar = document.getElementById('tab-bar');
+
+  tabBar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab');
+    if (!btn || btn.dataset.tab === activeTab) return;
+    activeTab = btn.dataset.tab;
+    document.querySelectorAll('.tab').forEach((t) =>
+      t.classList.toggle('active', t.dataset.tab === activeTab));
+    applyTabVisibility();
+    renderScheduled();
+    if (activeTab === 'translate') {
+      loadTranslateGroupList();
+      startFeedPolling();
+    } else {
+      stopFeedPolling();
+    }
+  });
+
+  function applyTabVisibility() {
+    const connected = waStatus === 'connected';
+    tabBar.classList.toggle('hidden', !connected);
+    document.getElementById('compose-card').classList.toggle('hidden', !connected || activeTab !== 'scheduler');
+    document.getElementById('download-card').classList.toggle('hidden', !connected || activeTab !== 'scheduler');
+    if (activeTab !== 'scheduler') document.getElementById('list-card').classList.add('hidden');
+    document.getElementById('translate-groups-card').classList.toggle('hidden', !connected || activeTab !== 'translate');
+    document.getElementById('translate-feed-card').classList.toggle('hidden', !connected || activeTab !== 'translate' || !activeGroup);
+  }
+
+  // ── Translate: saved groups ───────────────────────────────────────────────
+  async function loadTranslateGroupList() {
+    try {
+      const res = await fetch('/api/translate/groups');
+      translateGroups = await res.json();
+      renderGroupChips();
+    } catch (_) { /* server may be restarting */ }
+  }
+
+  async function saveTranslateGroupsToServer() {
+    try {
+      await fetch('/api/translate/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groups: translateGroups }),
+      });
+    } catch (_) { alert('Failed to save group list'); }
+  }
+
+  function renderGroupChips() {
+    const el = document.getElementById('group-chips');
+    if (translateGroups.length === 0) {
+      el.innerHTML = '<div class="empty-state" style="padding:12px;width:100%;">No groups yet — search above to add one.</div>';
+      return;
+    }
+    el.innerHTML = translateGroups.map((g) => `
+      <button class="group-chip ${activeGroup && activeGroup.id === g.id ? 'active' : ''}" data-group-id="${escapeHtml(g.id)}">
+        ${escapeHtml(g.name)}
+        <span class="chip-remove" data-remove-id="${escapeHtml(g.id)}" title="Remove">&times;</span>
+      </button>
+    `).join('');
+  }
+
+  document.getElementById('group-chips').addEventListener('click', (e) => {
+    const removeEl = e.target.closest('[data-remove-id]');
+    if (removeEl) {
+      e.stopPropagation();
+      const id = removeEl.dataset.removeId;
+      translateGroups = translateGroups.filter((g) => g.id !== id);
+      if (activeGroup && activeGroup.id === id) { activeGroup = null; feedMessages = []; }
+      saveTranslateGroupsToServer();
+      renderGroupChips();
+      applyTabVisibility();
+      return;
+    }
+    const chip = e.target.closest('[data-group-id]');
+    if (!chip) return;
+    const group = translateGroups.find((g) => g.id === chip.dataset.groupId);
+    if (group) openGroupFeed(group);
+  });
+
+  // ── Translate: group search ───────────────────────────────────────────────
+  const groupSearchInput = document.getElementById('group-search-input');
+  const groupSearchDropdown = document.getElementById('group-search-dropdown');
+  let groupSearchTimeout = null;
+
+  groupSearchInput.addEventListener('focus', () => searchGroups(groupSearchInput.value.trim()));
+  groupSearchInput.addEventListener('input', () => {
+    clearTimeout(groupSearchTimeout);
+    groupSearchTimeout = setTimeout(() => searchGroups(groupSearchInput.value.trim()), 200);
+  });
+
+  async function searchGroups(q) {
+    try {
+      const res = await fetch(`/api/contacts?q=${encodeURIComponent(q)}`);
+      const groups = (await res.json()).filter((c) => c.isGroup);
+      if (groups.length === 0) { groupSearchDropdown.style.display = 'none'; return; }
+      groupSearchDropdown.innerHTML = groups.map((g) => `
+        <div class="contact-item" data-id="${escapeHtml(g.id)}" data-name="${escapeHtml(g.name)}">
+          <div class="contact-name">${escapeHtml(g.name)} <span class="group-tag">group</span></div>
+        </div>
+      `).join('');
+      groupSearchDropdown.style.display = 'block';
+    } catch (_) { groupSearchDropdown.style.display = 'none'; }
+  }
+
+  groupSearchDropdown.addEventListener('click', (e) => {
+    const item = e.target.closest('.contact-item');
+    if (!item) return;
+    groupSearchDropdown.style.display = 'none';
+    groupSearchInput.value = '';
+    if (!translateGroups.some((g) => g.id === item.dataset.id)) {
+      translateGroups.push({ id: item.dataset.id, name: item.dataset.name });
+      saveTranslateGroupsToServer();
+      renderGroupChips();
+    }
+    openGroupFeed(translateGroups.find((g) => g.id === item.dataset.id));
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#translate-groups-card .contact-wrapper')) groupSearchDropdown.style.display = 'none';
+  });
+
+  // ── Translate: feed ───────────────────────────────────────────────────────
+  function openGroupFeed(group) {
+    activeGroup = group;
+    feedLimit = 50;
+    feedMessages = [];
+    document.getElementById('feed-title').textContent = group.name;
+    renderGroupChips();
+    applyTabVisibility();
+    renderFeed(true);
+    fetchFeed({ scrollToBottom: true });
+  }
+
+  async function fetchFeed({ scrollToBottom = false, keepScroll = false } = {}) {
+    if (!activeGroup || feedFetchInFlight) return;
+    feedFetchInFlight = true;
+    const feedEl = document.getElementById('feed');
+    const prevHeight = feedEl.scrollHeight;
+    try {
+      const res = await fetch(`/api/translate/messages?groupId=${encodeURIComponent(activeGroup.id)}&limit=${feedLimit}`);
+      const data = await res.json();
+      const errEl = document.getElementById('translate-error');
+      if (!res.ok) {
+        errEl.textContent = data.error || 'Failed to load messages';
+        errEl.classList.remove('hidden');
+        return;
+      }
+      errEl.classList.toggle('hidden', !data.translationError);
+      if (data.translationError) errEl.textContent = `Translation failed (will retry): ${data.translationError}`;
+      feedMessages = data.messages;
+      renderFeed();
+      if (scrollToBottom) feedEl.scrollTop = feedEl.scrollHeight;
+      if (keepScroll) feedEl.scrollTop = feedEl.scrollHeight - prevHeight; // keep viewport anchored after prepending history
+    } catch (_) {
+      // transient network error — next poll retries
+    } finally {
+      feedFetchInFlight = false;
+      document.getElementById('feed-loading').classList.add('hidden');
+    }
+  }
+
+  function mediaLabel(type) {
+    const labels = { image: '📷 photo', video: '🎥 video', ptt: '🎤 voice message', audio: '🎵 audio', document: '📄 document', sticker: '💟 sticker', location: '📍 location', vcard: '👤 contact card' };
+    return labels[type] || `[${type}]`;
+  }
+
+  function renderFeed(loadingOnly = false) {
+    const feedEl = document.getElementById('feed');
+    const loading = '<div id="feed-loading" class="hidden">Loading older messages…</div>';
+    if (loadingOnly) { feedEl.innerHTML = loading + '<div class="empty-state">Loading…</div>'; return; }
+    if (feedMessages.length === 0) {
+      feedEl.innerHTML = loading + '<div class="empty-state">No messages yet in this group.</div>';
+      return;
+    }
+    feedEl.innerHTML = loading + feedMessages.map((m) => {
+      const hasText = m.body && m.body.trim();
+      const isMedia = m.type !== 'chat';
+      let content = '';
+      if (isMedia) content += `<div class="bubble-media">${escapeHtml(mediaLabel(m.type))}</div>`;
+      if (hasText) {
+        if (m.translated && m.translation !== null) {
+          content += `<div class="bubble-translation">${escapeHtml(m.translation)}</div>`;
+          content += `<div class="bubble-original">${escapeHtml(m.body)}</div>`;
+        } else if (m.translated) {
+          // already English
+          content += `<div class="bubble-translation">${escapeHtml(m.body)}<span class="lang-badge">EN</span></div>`;
+        } else {
+          content += `<div class="bubble-translation">${escapeHtml(m.body)}</div>`;
+          content += `<div class="bubble-failed">translation pending — retrying…</div>`;
+        }
+      }
+      return `
+        <div class="bubble ${m.fromMe ? 'from-me' : ''}">
+          <div class="bubble-sender">${escapeHtml(m.senderName)}</div>
+          ${content}
+          <div class="bubble-meta">${escapeHtml(formatDateTime(m.timestamp))}${m.lang && m.translation !== null ? `<span class="lang-badge">${escapeHtml(m.lang)}</span>` : ''}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Scroll-up → load more history (fetchMessages only supports "latest N", so grow the limit)
+  document.getElementById('feed').addEventListener('scroll', (e) => {
+    if (e.target.scrollTop === 0 && activeGroup && !feedFetchInFlight && feedMessages.length >= feedLimit) {
+      feedLimit += 100;
+      document.getElementById('feed-loading').classList.remove('hidden');
+      fetchFeed({ keepScroll: true });
+    }
+  });
+
+  function startFeedPolling() {
+    if (feedPollInterval) return;
+    feedPollInterval = setInterval(() => {
+      if (activeTab === 'translate' && activeGroup && waStatus === 'connected') fetchFeed();
+    }, 4000);
+  }
+
+  function stopFeedPolling() {
+    if (feedPollInterval) { clearInterval(feedPollInterval); feedPollInterval = null; }
   }
 
   // ── Init ──────────────────────────────────────────────────────────────────
