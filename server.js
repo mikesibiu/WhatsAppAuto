@@ -1,3 +1,8 @@
+require('dotenv').config();
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.warn('⚠ ANTHROPIC_API_KEY not set — the Translate feature will return errors until you add it to .env');
+}
+
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
@@ -6,6 +11,8 @@ const fs = require('fs');
 const { exec } = require('child_process');
 const crypto = require('crypto');
 const multer = require('multer');
+const { translateBatch } = require('./lib/translator');
+const { createCache } = require('./lib/translationCache');
 
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -34,6 +41,57 @@ let anySentThisSession = false; // guards auto-shutdown from firing on a bare re
 
 const QUEUE_FILE    = path.join(__dirname, 'queue.json');
 const CONTACTS_FILE = path.join(__dirname, 'contacts.json');
+const TRANSLATE_GROUPS_FILE = path.join(__dirname, 'translate-groups.json');
+const translationCache = createCache(path.join(__dirname, 'translations'));
+
+function loadTranslateGroups() {
+  try {
+    if (fs.existsSync(TRANSLATE_GROUPS_FILE)) {
+      return JSON.parse(fs.readFileSync(TRANSLATE_GROUPS_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('Failed to load translate groups:', e.message);
+  }
+  return [];
+}
+
+function saveTranslateGroups(groups) {
+  try {
+    fs.writeFileSync(TRANSLATE_GROUPS_FILE, JSON.stringify(groups, null, 2));
+  } catch (e) {
+    console.error('Failed to save translate groups:', e.message);
+  }
+}
+
+// WhatsApp now addresses group senders by LID, which doesn't match the contact
+// cache (@c.us). Map LID → phone number once per author and remember it.
+const lidPnCache = new Map(); // '<id>@lid' -> '<number>@c.us' | null
+
+async function resolveLidAuthors(msgs) {
+  const authorIds = [...new Set(msgs.filter((m) => !m.fromMe).map((m) => m.author || m.from))];
+  const unknown = authorIds.filter((id) => id && id.endsWith('@lid') && !lidPnCache.has(id));
+  if (!unknown.length) return;
+  try {
+    const mapped = await client.getContactLidAndPhone(unknown);
+    for (const r of mapped) if (r.lid) lidPnCache.set(r.lid, r.pn || null);
+  } catch (e) {
+    console.error('LID→phone resolution failed:', e.message);
+  }
+}
+
+// Resolve a group message's author to a display name via the contact cache.
+function resolveSenderName(msg) {
+  if (msg.fromMe) return 'You';
+  const authorId = msg.author || msg.from;
+  const candidateIds = [authorId, lidPnCache.get(authorId)].filter(Boolean);
+  for (const id of candidateIds) {
+    const contact = contacts.find((c) => (c.id?._serialized ?? c.id) === id);
+    if (contact && (contact.name || contact.pushname)) return contact.name || contact.pushname;
+  }
+  if (msg._data && msg._data.notifyName) return msg._data.notifyName; // sender's push name
+  const pn = lidPnCache.get(authorId);
+  return String(pn || authorId).split('@')[0];
+}
 
 // ── Contact cache ──────────────────────────────────────────────────────────
 
@@ -348,6 +406,82 @@ app.post('/api/download-images', async (req, res) => {
   } catch (err) {
     console.error('Error downloading images:', err);
     res.status(500).json({ error: err.message || 'Failed to download images' });
+  }
+});
+
+app.get('/api/translate/groups', (_req, res) => {
+  res.json(loadTranslateGroups());
+});
+
+app.post('/api/translate/groups', (req, res) => {
+  const { groups } = req.body;
+  if (!Array.isArray(groups) || groups.some((g) => !g.id || !g.name)) {
+    return res.status(400).json({ error: 'groups must be an array of {id, name}' });
+  }
+  saveTranslateGroups(groups.map(({ id, name }) => ({ id, name })));
+  res.json({ success: true });
+});
+
+app.get('/api/translate/messages', async (req, res) => {
+  const { groupId } = req.query;
+  const limit = Math.min(Number(req.query.limit) || 50, 1000);
+
+  if (!groupId) return res.status(400).json({ error: 'Missing groupId' });
+  if (waStatus !== 'connected') return res.status(400).json({ error: 'WhatsApp not connected' });
+
+  cancelAutoShutdown(); // user is actively reading — don't exit under them
+
+  try {
+    const chat = await client.getChatById(groupId);
+    const fetched = await chat.fetchMessages({ limit });
+    await resolveLidAuthors(fetched);
+
+    const items = fetched.map((msg) => ({
+      id: msg.id.id,
+      senderName: resolveSenderName(msg),
+      timestamp: msg.timestamp * 1000,
+      type: msg.type, // 'chat' for text; 'image', 'ptt', 'document', 'sticker', ... for media
+      fromMe: !!msg.fromMe,
+      body: msg.body || '', // for media messages this is the caption
+    }));
+
+    const toTranslate = items.filter(
+      (m) => m.body.trim() && !translationCache.get(groupId, m.id)
+    );
+
+    let translationError = null;
+    if (toTranslate.length > 0) {
+      try {
+        const results = await translateBatch(
+          toTranslate.map(({ id, body }) => ({ id, text: body }))
+        );
+        const entries = {};
+        for (const [id, r] of Object.entries(results)) {
+          if (r) entries[id] = r; // skipped ids stay uncached and retry next fetch
+        }
+        translationCache.setMany(groupId, entries);
+      } catch (err) {
+        console.error('Translation failed:', err.message);
+        translationError = err.message;
+      }
+    }
+
+    const messages = items
+      .map((m) => {
+        const cached = m.body.trim() ? translationCache.get(groupId, m.id) : null;
+        return {
+          ...m,
+          lang: cached ? cached.lang : null,
+          translation: cached ? cached.translation : null,
+          translated: !!cached,
+        };
+      })
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    res.json({ messages, translationError });
+  } catch (err) {
+    console.error('Error fetching translate feed:', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch messages' });
   }
 });
 
